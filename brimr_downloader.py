@@ -259,9 +259,12 @@ def get_downloads_folder() -> Path:
 
 def detect_available_years(logger: logging.Logger | None = None) -> list[int]:
     """
-    Detect available ranking years by checking which year URLs actually exist.
+    Detect available ranking years from the BRIMR website.
 
-    Probes individual year URLs from current year back to 2006 to find all valid years.
+    Strategy:
+        1. First try scraping the navigation menu from the homepage (fast, reliable)
+        2. Fall back to probing individual year URLs
+        3. Final fallback: dynamic range from current year down to 2006
     """
     headers = {
         "User-Agent": (
@@ -270,19 +273,49 @@ def detect_available_years(logger: logging.Logger | None = None) -> list[int]:
         ),
     }
 
-    years: set[int] = set()
     current_year = datetime.now().year
 
+    # ── Strategy 1: Scrape nav menu from homepage (fastest & most reliable) ──
+    if logger:
+        logger.info("Detecting available years from BRIMR homepage navigation...")
+
+    try:
+        response = requests.get(
+            "https://brimr.org/", headers=headers, timeout=10
+        )
+        if response.status_code == 200:
+            nav_years = set(
+                int(m)
+                for m in re.findall(
+                    r"brimr-rankings-of-nih-funding-in-(\d{4})",
+                    response.text,
+                )
+            )
+            if nav_years:
+                if logger:
+                    logger.info(
+                        f"Found {len(nav_years)} years from homepage: "
+                        f"{min(nav_years)}-{max(nav_years)}"
+                    )
+                return sorted(nav_years, reverse=True)
+    except requests.RequestException as e:
+        if logger:
+            logger.debug(f"Homepage scrape failed: {e}")
+
+    # ── Strategy 2: Probe individual year URLs ──
+    # Latest possible ranking is prior calendar year (fiscal year lag)
+    latest_possible = current_year - 1
     if logger:
         logger.info(
-            f"Probing BRIMR for available years ({current_year} down to 2006)..."
+            f"Homepage scrape unsuccessful, probing individual URLs "
+            f"({latest_possible} down to 2006)..."
         )
 
-    # Probe every year from current down to 2006
-    for year in range(current_year, 2005, -1):
+    years: set[int] = set()
+
+    for year in range(latest_possible, 2005, -1):
         url = BASE_URL_TEMPLATE.format(year=year)
         try:
-            # Try HEAD request first (faster)
             response = requests.head(
                 url, headers=headers, timeout=6, allow_redirects=True
             )
@@ -292,9 +325,9 @@ def detect_available_years(logger: logging.Logger | None = None) -> list[int]:
                 if logger:
                     logger.debug(f"Year {year} exists (HEAD)")
             elif response.status_code in (403, 405):
-                # Some servers reject HEAD, try GET with stream=True (minimal download)
                 response = requests.get(
-                    url, headers=headers, timeout=8, allow_redirects=True, stream=True
+                    url, headers=headers, timeout=8,
+                    allow_redirects=True, stream=True
                 )
                 if response.status_code == 200:
                     years.add(year)
@@ -311,10 +344,15 @@ def detect_available_years(logger: logging.Logger | None = None) -> list[int]:
             logger.info(f"Detected {len(years)} years: {min(years)}-{max(years)}")
         return sorted(years, reverse=True)
 
-    # Fallback - known working range
+    # ── Strategy 3: Final fallback - dynamic range ──
+    # BRIMR ranks NIH fiscal years (ending Sept 30), published months later,
+    # so the latest possible ranking year is always the prior calendar year.
+    latest_possible = current_year - 1
     if logger:
-        logger.warning("Could not detect years, using known range 2006-2024")
-    return list(range(2024, 2005, -1))
+        logger.warning(
+            f"All detection methods failed, using range 2006-{latest_possible}"
+        )
+    return list(range(latest_possible, 2005, -1))
 
 
 def categorize_file(filename: str) -> str:
