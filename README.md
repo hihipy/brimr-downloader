@@ -1,4 +1,4 @@
-# BRIMR Downloader
+# brimr-downloader
 
 If you've ever spent time manually downloading Excel files from the BRIMR website one by one, you know how tedious it can be. This Python script automates that work so you can get straight to analyzing NIH funding data.
 
