@@ -11,47 +11,45 @@
 [![requests](https://img.shields.io/badge/requests-2C2D72?style=flat&logoColor=white)](https://requests.readthedocs.io)
 [![Tkinter](https://img.shields.io/badge/Tkinter-FFD43B?style=flat&logo=python&logoColor=black)](https://docs.python.org/3/library/tkinter.html)
 
-If you've ever spent time manually downloading Excel files from the BRIMR website one by one, you know how tedious it can be. This Python script automates that work so you can get straight to analyzing NIH funding data.
+If you've ever spent time downloading Excel files from the BRIMR website one by one, you know how tedious it gets. This Python script automates that work so you can get straight to analyzing NIH funding data, turning hours of clicking into a single organized download.
 
-What would take hours of clicking becomes a single organized download.
+---
 
-------
+## The Problem
 
-## The Challenge
+The [Blue Ridge Institute for Medical Research (BRIMR)](https://brimr.org/) publishes excellent NIH funding rankings, but getting the data out is a chore:
 
-The [Blue Ridge Institute for Medical Research (BRIMR)](https://brimr.org/) provides invaluable NIH funding rankings, but accessing the data comes with some friction:
+- **Manual downloads:** Each Excel file has to be downloaded individually, and there are 70+ files per year across nearly two decades of data.
+- **No organization:** Files arrive with inconsistent names and no folder structure, leaving a mess in your Downloads folder.
+- **Time-consuming:** Downloading even five years of data by hand can take an hour or more of repetitive clicking.
+- **Easy to miss files:** With so many links on each page, it's easy to skip files or grab duplicates.
 
-- **Manual Downloads:** Each Excel file must be downloaded individually, and there are 70+ files per year across nearly two decades of data.
-- **No Organization:** Files download with inconsistent names and no folder structure, leaving you with a mess in your Downloads folder.
-- **Time-Consuming:** Downloading just five years of data manually could take an hour or more of repetitive clicking.
-- **Easy to Miss Files:** With so many links on each page, it's easy to accidentally skip files or download duplicates.
-
-------
+---
 
 ## The Solution
 
-This script uses browser automation to visit each year's BRIMR page and systematically download every Excel file, organizing them into a clean folder structure.
+This script uses browser automation to visit each year's BRIMR page, download every Excel file, and sort them into a clean folder structure.
 
 ### Why Browser Automation?
 
-Selenium-based browser automation ensures reliable, complete downloads.
+BRIMR pages load their content dynamically, and that shapes the approach.
 
-- **Handles Dynamic Content:** BRIMR pages load content dynamically, which simple HTTP requests can miss. Browser automation sees exactly what you would see.
-- **Reliable Downloads:** By automating a real browser, downloads work exactly as they would if you clicked each link yourself.
-- **User-Friendly GUI:** The script uses a familiar desktop interface. No command-line interaction required. Just check the years you want and click Download.
+- **Handles dynamic content:** Simple HTTP requests can miss content that loads dynamically. A real browser sees exactly what you would see.
+- **Reliable downloads:** Automating a real browser means downloads work the same way they would if you clicked each link yourself.
+- **Desktop GUI:** No command line required. Check the years you want and click Download.
 
-------
+---
 
 ## Features
 
-- **Simple GUI:** A clean desktop interface lets you select years and monitor progress.
-- **Single Chrome Instance:** Reuses one browser session for all downloads, making multi-year downloads faster.
-- **Smart Organization:** Automatically categorizes files into logical folders (School Rankings, Clinical Departments, PI Rankings, etc.).
-- **Skip Existing Files:** Won't re-download files you already have. Perfect for updating your dataset with new years.
-- **Cancel Anytime:** Stop mid-download without losing what's already been saved.
-- **Logging:** Every download is logged to a timestamped file for debugging.
+- **Simple GUI:** A desktop interface to select years and watch progress.
+- **Single Chrome instance:** Reuses one browser session for all downloads, which speeds up multi-year runs.
+- **Automatic sorting:** Files are categorized into logical folders (School Rankings, Clinical Departments, PI Rankings, and so on).
+- **Skips existing files:** Won't re-download files you already have, which makes adding new years easy.
+- **Cancel anytime:** Stop mid-download without losing what's already saved.
+- **Logging:** Every download is recorded to a timestamped file for debugging.
 
-------
+---
 
 ## Getting Started
 
@@ -61,51 +59,51 @@ Install **Python 3.10** or newer from the official [Python website](https://www.
 
 ### Running the Downloader
 
-1. **Set Up Your Environment:**
+1. **Set up your environment:**
 
    Open your terminal or command prompt, navigate to the project folder, and run:
 
    **macOS / Linux:**
 
-   ```bash
+```bash
    python3 -m venv .venv
    source .venv/bin/activate
    pip install selenium webdriver-manager requests
-   ```
+```
 
    **Windows:**
 
-   ```powershell
+```powershell
    python -m venv .venv
    .\.venv\Scripts\Activate.ps1
    pip install selenium webdriver-manager requests
-   ```
+```
 
-2. **Run the Script:**
+2. **Run the script:**
 
-   ```bash
+```bash
    python brimr_downloader.py
-   ```
+```
 
-3. **Select Your Years:**
+3. **Select your years:**
 
-   The GUI will open and automatically detect available years from the BRIMR website. Check the years you want (or use "Select All" / "Recent 5 Years").
+   The GUI will open and detect the available years from the BRIMR website. Check the years you want, or use "Select All" / "Recent 5 Years."
 
 4. **Download:**
 
-   Hit the Download button and watch the progress bar. Your files will be organized and ready when it's done.
+   Hit the Download button and watch the progress bar. Your files will be organized and ready when it finishes.
 
-------
+---
 
 ## Output Structure
 
-The downloader creates an organized folder structure in your Downloads folder.
+The downloader builds an organized folder structure in your Downloads folder.
 
 | Folder / File                                  | Description                                                                        |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `BRIMR_Data/`                                  | Root folder containing all downloaded files, organized by year.                    |
 | `BRIMR_Data/2024/`                             | Each selected year gets its own folder.                                            |
-| `BRIMR_Data/2024/01_Source_Data/`              | Worldwide rankings, contracts, and comprehensive institutional data.               |
+| `BRIMR_Data/2024/01_Source_Data/`              | Worldwide rankings, contracts, and full institutional data.                        |
 | `BRIMR_Data/2024/02_School_Rankings/`          | Medical schools, nursing, pharmacy, dentistry, and other school types.             |
 | `BRIMR_Data/2024/03_Department_Summaries/`     | Aggregated views of funding by department.                                         |
 | `BRIMR_Data/2024/04_Basic_Science/`            | Biochemistry, genetics, neurosciences, pharmacology, and more.                     |
@@ -115,30 +113,30 @@ The downloader creates an organized folder structure in your Downloads folder.
 | `BRIMR_Data/2024/08_Other/`                    | Top Ten lists, COVID awards, MERIT awards, and other datasets.                     |
 | `brimr_downloader_*.log`                       | Timestamped log of every file downloaded.                                          |
 
-------
+---
 
 ## Options
 
 | Option             | Description                                                      |
 | ------------------ | ---------------------------------------------------------------- |
 | **Output Folder**  | Change where files are saved (defaults to Downloads/BRIMR_Data). |
-| **Headless Mode**  | Run Chrome invisibly in the background (enabled by default).     |
-| **Year Selection** | Check individual years or use quick-select buttons.              |
+| **Headless Mode**  | Run Chrome invisibly in the background (on by default).          |
+| **Year Selection** | Check individual years or use the quick-select buttons.          |
 
-------
+---
 
 ## Troubleshooting
 
 **Chrome doesn't start / ChromeDriver error**
-The script automatically downloads the correct ChromeDriver for your Chrome version. Make sure Google Chrome is installed and your internet connection is working.
+The script downloads the correct ChromeDriver for your Chrome version automatically. Make sure Google Chrome is installed and your internet connection is working.
 
 **Some years show no files**
-BRIMR data has a natural lag. The most recent year's data may not be available yet. The script will report "Years without data: X" if any selected years are empty.
+BRIMR data has a natural lag, so the most recent year may not be posted yet. The script reports "Years without data: X" if any selected years are empty.
 
 **Download seems stuck**
-Some files are larger and take longer. Check the log file for progress. You can also disable headless mode to watch the browser work.
+Larger files take longer. Check the log file for progress, or disable headless mode to watch the browser work.
 
-------
+---
 
 ## Requirements
 
@@ -151,7 +149,7 @@ Some files are larger and take longer. Check the log file for progress. You can 
 - `webdriver-manager` - Automatic ChromeDriver management
 - `requests` - HTTP requests for year detection
 
-------
+---
 
 ## License
 
@@ -162,6 +160,6 @@ You are free to:
 - Use it at your job
 
 Under these terms:
-- **Attribution** — Credit the original author
-- **NonCommercial** — No selling or commercial products
-- **ShareAlike** — Derivatives must use the same license
+- **Attribution:** Credit the original author
+- **NonCommercial:** No selling or commercial products
+- **ShareAlike:** Derivatives must use the same license
