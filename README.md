@@ -6,10 +6,10 @@
 **Built with**
 
 [![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
-[![Selenium](https://img.shields.io/badge/Selenium-43B02A?style=flat&logo=selenium&logoColor=white)](https://selenium.dev)
-[![webdriver-manager](https://img.shields.io/badge/webdriver--manager-43A047?style=flat&logoColor=white)](https://pypi.org/project/webdriver-manager/)
 [![requests](https://img.shields.io/badge/requests-2C2D72?style=flat&logoColor=white)](https://requests.readthedocs.io)
+[![Selenium](https://img.shields.io/badge/Selenium-43B02A?style=flat&logo=selenium&logoColor=white)](https://selenium.dev)
 [![Tkinter](https://img.shields.io/badge/Tkinter-FFD43B?style=flat&logo=python&logoColor=black)](https://docs.python.org/3/library/tkinter.html)
+[![webdriver-manager](https://img.shields.io/badge/webdriver--manager-43A047?style=flat&logoColor=white)](https://pypi.org/project/webdriver-manager/)
 
 If you've ever spent time downloading Excel files from the BRIMR website one by one, you know how tedious it gets. This Python script automates that work so you can get straight to analyzing NIH funding data, turning hours of clicking into a single organized download.
 
