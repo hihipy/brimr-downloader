@@ -14,7 +14,10 @@ Features:
     - Cross-platform (Windows, macOS, Linux)
 
 Requirements:
-    pip install selenium webdriver-manager requests
+    pip install selenium
+
+Tests:
+    python -m pytest
 
 Usage:
     python brimr_downloader.py
@@ -30,18 +33,18 @@ import shutil
 import threading
 import time
 from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urljoin, urlparse
 
-import requests
 from selenium import webdriver
+from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
 
 if TYPE_CHECKING:
     from tkinter import Event
@@ -59,7 +62,11 @@ EXTRA_RENDER_WAIT: float = 2.0
 DOWNLOAD_CHECK_INTERVAL: float = 0.3
 UI_QUEUE_POLL_MS: int = 100
 
+HOME_URL: str = "https://brimr.org/"
 BASE_URL_TEMPLATE: str = "https://brimr.org/brimr-rankings-of-nih-funding-in-{year}/"
+FIRST_RANKING_YEAR: int = 2006
+YEAR_PAGE_RE = re.compile(r"brimr-rankings-of-nih-funding-in-(\d{4})")
+EXCEL_SUFFIXES: tuple[str, ...] = (".xls", ".xlsx")
 
 FILE_CATEGORIES: dict[str, list[str]] = {
     # Source/master data files - comprehensive institutional data
@@ -257,102 +264,96 @@ def get_downloads_folder() -> Path:
     return Path.home() / "Downloads"
 
 
-def detect_available_years(logger: logging.Logger | None = None) -> list[int]:
-    """
-    Detect available ranking years from the BRIMR website.
+class _AnchorCollector(HTMLParser):
+    """Collect anchor hrefs. The parser decodes entities such as &amp; itself."""
 
-    Strategy:
-        1. First try scraping the navigation menu from the homepage (fast, reliable)
-        2. Fall back to probing individual year URLs
-        3. Final fallback: dynamic range from current year down to 2006
-    """
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-        ),
+    def __init__(self) -> None:
+        super().__init__()
+        self.hrefs: list[str] = []
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        if tag != "a":
+            return
+        for name, value in attrs:
+            if name == "href" and value and value.strip():
+                self.hrefs.append(value.strip())
+
+
+def collect_hrefs(html: str) -> list[str]:
+    """Return every anchor href in the HTML, in document order."""
+    collector = _AnchorCollector()
+    collector.feed(html)
+    collector.close()
+    return collector.hrefs
+
+
+def parse_year_links(html: str) -> list[int]:
+    """Return the ranking years linked from a BRIMR page, newest first."""
+    years = {
+        int(match.group(1))
+        for href in collect_hrefs(html)
+        if (match := YEAR_PAGE_RE.search(href))
     }
+    return sorted(years, reverse=True)
 
-    current_year = datetime.now().year
 
-    # ── Strategy 1: Scrape nav menu from homepage (fastest & most reliable) ──
-    if logger:
-        logger.info("Detecting available years from BRIMR homepage navigation...")
+def extract_excel_urls(html: str, page_url: str) -> list[str]:
+    """Return absolute Excel URLs linked from a page, in order, without duplicates."""
+    urls: list[str] = []
+    for href in collect_hrefs(html):
+        absolute = urljoin(page_url, href)
+        # Test the path, not the whole URL, so query strings do not hide the suffix.
+        if urlparse(absolute).path.lower().endswith(EXCEL_SUFFIXES):
+            urls.append(absolute)
+    return list(dict.fromkeys(urls))
 
+
+def fallback_years(today: datetime | None = None) -> list[int]:
+    """Every year BRIMR could have published, newest first."""
+    # BRIMR ranks NIH fiscal years (ending Sept 30), published months later,
+    # so the latest possible ranking year is always the prior calendar year.
+    latest_possible = (today or datetime.now()).year - 1
+    return list(range(latest_possible, FIRST_RANKING_YEAR - 1, -1))
+
+
+def detect_available_years(
+    driver: webdriver.Chrome, logger: logging.Logger | None = None
+) -> tuple[list[int], bool]:
+    """
+    Read the available ranking years from the BRIMR homepage navigation.
+
+    The host rejects plain HTTP clients by TLS fingerprint, so this goes
+    through the browser. Returns (years, detected); detected is False when
+    the page could not be read and the fallback range is returned instead.
+    """
     try:
-        response = requests.get(
-            "https://brimr.org/", headers=headers, timeout=10
+        driver.get(HOME_URL)
+        WebDriverWait(driver, PAGE_LOAD_TIMEOUT).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
         )
-        if response.status_code == 200:
-            nav_years = set(
-                int(m)
-                for m in re.findall(
-                    r"brimr-rankings-of-nih-funding-in-(\d{4})",
-                    response.text,
-                )
-            )
-            if nav_years:
-                if logger:
-                    logger.info(
-                        f"Found {len(nav_years)} years from homepage: "
-                        f"{min(nav_years)}-{max(nav_years)}"
-                    )
-                return sorted(nav_years, reverse=True)
-    except requests.RequestException as e:
+        years = parse_year_links(driver.page_source)
+    except WebDriverException as e:
+        years = []
         if logger:
-            logger.debug(f"Homepage scrape failed: {e}")
-
-    # ── Strategy 2: Probe individual year URLs ──
-    # Latest possible ranking is prior calendar year (fiscal year lag)
-    latest_possible = current_year - 1
-    if logger:
-        logger.info(
-            f"Homepage scrape unsuccessful, probing individual URLs "
-            f"({latest_possible} down to 2006)..."
-        )
-
-    years: set[int] = set()
-
-    for year in range(latest_possible, 2005, -1):
-        url = BASE_URL_TEMPLATE.format(year=year)
-        try:
-            response = requests.head(
-                url, headers=headers, timeout=6, allow_redirects=True
-            )
-
-            if response.status_code == 200:
-                years.add(year)
-                if logger:
-                    logger.debug(f"Year {year} exists (HEAD)")
-            elif response.status_code in (403, 405):
-                response = requests.get(
-                    url, headers=headers, timeout=8,
-                    allow_redirects=True, stream=True
-                )
-                if response.status_code == 200:
-                    years.add(year)
-                    if logger:
-                        logger.debug(f"Year {year} exists (GET fallback)")
-
-        except requests.RequestException as e:
-            if logger:
-                logger.debug(f"Year {year} probe failed: {e}")
-            continue
+            logger.debug(f"Homepage read failed: {e}")
 
     if years:
         if logger:
-            logger.info(f"Detected {len(years)} years: {min(years)}-{max(years)}")
-        return sorted(years, reverse=True)
+            logger.info(
+                f"Found {len(years)} years from homepage: "
+                f"{min(years)}-{max(years)}"
+            )
+        return years, True
 
-    # ── Strategy 3: Final fallback - dynamic range ──
-    # BRIMR ranks NIH fiscal years (ending Sept 30), published months later,
-    # so the latest possible ranking year is always the prior calendar year.
-    latest_possible = current_year - 1
+    fallback = fallback_years()
     if logger:
         logger.warning(
-            f"All detection methods failed, using range 2006-{latest_possible}"
+            f"Year detection failed, using range "
+            f"{min(fallback)}-{max(fallback)}"
         )
-    return list(range(latest_possible, 2005, -1))
+    return fallback, False
 
 
 def categorize_file(filename: str) -> str:
@@ -408,24 +409,30 @@ def sanitize_filename(filename: str) -> str:
 
 
 def create_chrome_driver(
-    download_dir: Path,
+    download_dir: Path | None,
     headless: bool = False,
     logger: logging.Logger | None = None
 ) -> webdriver.Chrome:
-    """Create a Chrome WebDriver configured for automatic file downloads."""
-    options = Options()
-    download_dir_str = str(download_dir.resolve())
+    """
+    Create a Chrome WebDriver.
 
-    prefs = {
-        "download.default_directory": download_dir_str,
-        "download.prompt_for_download": False,
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": True,
-        "profile.default_content_settings.popups": 0,
-        "profile.content_settings.exceptions.automatic_downloads.*.setting": 1,
-        "profile.default_content_setting_values.automatic_downloads": 1,
-    }
-    options.add_experimental_option("prefs", prefs)
+    With a download_dir, the driver saves files there without prompting.
+    Without one, it is a read-only browser for page lookups.
+    """
+    options = Options()
+
+    if download_dir is not None:
+        download_dir_str = str(download_dir.resolve())
+        prefs = {
+            "download.default_directory": download_dir_str,
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "safebrowsing.enabled": True,
+            "profile.default_content_settings.popups": 0,
+            "profile.content_settings.exceptions.automatic_downloads.*.setting": 1,
+            "profile.default_content_setting_values.automatic_downloads": 1,
+        }
+        options.add_experimental_option("prefs", prefs)
 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
@@ -436,15 +443,13 @@ def create_chrome_driver(
         options.add_argument("--headless=new")
 
     if logger:
-        logger.info("Installing/locating ChromeDriver...")
+        logger.info("Starting Chrome (Selenium Manager locates the driver)...")
 
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
+    # A Service with no path hands driver lookup to Selenium Manager (Selenium 4.6+).
+    driver = webdriver.Chrome(service=Service(), options=options)
 
-    driver.execute_cdp_cmd(
-        "Page.setDownloadBehavior",
-        {"behavior": "allow", "downloadPath": download_dir_str}
-    )
+    if download_dir is not None:
+        set_download_directory(driver, download_dir)
 
     if logger:
         logger.info(f"Chrome driver ready (headless={headless})")
@@ -463,7 +468,7 @@ def set_download_directory(driver: webdriver.Chrome, directory: Path) -> None:
 
 def wait_for_download_complete(
     download_dir: Path,
-    timeout: int = DOWNLOAD_TIMEOUT,
+    timeout: float = DOWNLOAD_TIMEOUT,
     cancel_event: threading.Event | None = None
 ) -> Path | None:
     """Wait for a download to complete and return the downloaded file path."""
@@ -480,11 +485,10 @@ def wait_for_download_complete(
             continue
 
         temp_suffixes = (".crdownload", ".tmp", ".part")
-        excel_suffixes = (".xls", ".xlsx")
         temp_files = [f for f in files if f.suffix.lower() in temp_suffixes]
         excel_files = [
             f for f in files
-            if f.suffix.lower() in excel_suffixes and f.is_file()
+            if f.suffix.lower() in EXCEL_SUFFIXES and f.is_file()
         ]
 
         if excel_files and not temp_files:
@@ -690,16 +694,34 @@ class BRIMRDownloaderApp:
 
     def _detect_years_async(self) -> None:
         def detect():
-            years = detect_available_years()
-            self._enqueue_ui(self._populate_years, years)
+            years, detected = fallback_years(), False
+            driver: webdriver.Chrome | None = None
+            try:
+                driver = create_chrome_driver(None, headless=True)
+                years, detected = detect_available_years(driver)
+            except Exception:
+                # Any failure here must still reach the UI, or the year list
+                # stays on "Detecting..." forever. The fallback keeps it usable.
+                pass
+            finally:
+                if driver:
+                    try:
+                        driver.quit()
+                    except WebDriverException:
+                        pass
+            self._enqueue_ui(self._populate_years, years, detected)
         threading.Thread(target=detect, daemon=True).start()
 
-    def _populate_years(self, years: list[int]) -> None:
+    def _populate_years(self, years: list[int], detected: bool) -> None:
         self.available_years = years
         self.loading_label.destroy()
 
         year_range = f"{min(years)}-{max(years)}" if years else "None found"
-        self.years_frame.configure(text=f"Select Years ({year_range} available)")
+        if detected:
+            label = f"Select Years ({year_range} available)"
+        else:
+            label = f"Select Years ({year_range}, default range: BRIMR not reached)"
+        self.years_frame.configure(text=label)
 
         for i, year in enumerate(years):
             var = tk.BooleanVar(value=False)
@@ -888,30 +910,12 @@ class BRIMRDownloaderApp:
                     time.sleep(1)  # Brief pause so user sees the message
                     continue
 
-                links = driver.find_elements(
-                    By.CSS_SELECTOR,
-                    "a[href$='.xls'], a[href$='.xlsx'], "
-                    "a[href$='.XLS'], a[href$='.XLSX'], "
-                    "a[href*='.xls?'], a[href*='.xlsx?']"
-                )
+                excel_urls = extract_excel_urls(driver.page_source, url)
 
                 if self.logger:
                     self.logger.debug(
-                        f"CSS selector found {len(links)} link elements for {year}"
+                        f"Found {len(excel_urls)} unique Excel URLs for {year}"
                     )
-
-                excel_urls: list[str] = []
-                for link in links:
-                    href = (link.get_attribute("href") or "").strip()
-                    if any(ext in href.lower() for ext in [".xls", ".xlsx"]):
-                        excel_urls.append(href)
-
-                if self.logger:
-                    self.logger.debug(
-                        f"After filtering: {len(excel_urls)} Excel URLs for {year}"
-                    )
-
-                excel_urls = list(dict.fromkeys(excel_urls))
 
                 if not excel_urls:
                     self._update_status(

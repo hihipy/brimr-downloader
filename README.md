@@ -6,10 +6,8 @@
 **Built with**
 
 [![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
-[![requests](https://img.shields.io/badge/requests-2C2D72?style=flat&logoColor=white)](https://requests.readthedocs.io)
 [![Selenium](https://img.shields.io/badge/Selenium-43B02A?style=flat&logo=selenium&logoColor=white)](https://selenium.dev)
 [![Tkinter](https://img.shields.io/badge/Tkinter-FFD43B?style=flat&logo=python&logoColor=black)](https://docs.python.org/3/library/tkinter.html)
-[![webdriver-manager](https://img.shields.io/badge/webdriver--manager-43A047?style=flat&logoColor=white)](https://pypi.org/project/webdriver-manager/)
 
 If you've ever spent time downloading Excel files from the BRIMR website one by one, you know how tedious it gets. This Python script automates that work so you can get straight to analyzing NIH funding data, turning hours of clicking into a single organized download.
 
@@ -32,9 +30,9 @@ This script uses browser automation to visit each year's BRIMR page, download ev
 
 ### Why Browser Automation?
 
-BRIMR pages load their content dynamically, and that shapes the approach.
+BRIMR's server turns away requests that don't come from a real web browser, so a plain download script gets blocked. This tool drives an actual copy of Chrome, which the server accepts.
 
-- **Handles dynamic content:** Simple HTTP requests can miss content that loads dynamically. A real browser sees exactly what you would see.
+- **Gets past the server check:** Requests from ordinary scripts are refused. A real browser is let through.
 - **Reliable downloads:** Automating a real browser means downloads work the same way they would if you clicked each link yourself.
 - **Desktop GUI:** No command line required. Check the years you want and click Download.
 
@@ -53,9 +51,9 @@ BRIMR pages load their content dynamically, and that shapes the approach.
 
 ## Getting Started
 
-### You'll Need Python
+### You'll Need Python and Chrome
 
-Install **Python 3.10** or newer from the official [Python website](https://www.python.org/).
+Install **Python 3.10** or newer from the official [Python website](https://www.python.org/), and make sure [Google Chrome](https://www.google.com/chrome/) is installed.
 
 ### Running the Downloader
 
@@ -68,7 +66,7 @@ Install **Python 3.10** or newer from the official [Python website](https://www.
 ```bash
    python3 -m venv .venv
    source .venv/bin/activate
-   pip install selenium webdriver-manager requests
+   pip install selenium
 ```
 
    **Windows:**
@@ -76,7 +74,7 @@ Install **Python 3.10** or newer from the official [Python website](https://www.
 ```powershell
    python -m venv .venv
    .\.venv\Scripts\Activate.ps1
-   pip install selenium webdriver-manager requests
+   pip install selenium
 ```
 
 2. **Run the script:**
@@ -87,7 +85,7 @@ Install **Python 3.10** or newer from the official [Python website](https://www.
 
 3. **Select your years:**
 
-   The GUI will open and detect the available years from the BRIMR website. Check the years you want, or use "Select All" / "Recent 5 Years."
+   When the window opens, the app starts a hidden copy of Chrome to read the available years from the BRIMR website. This takes a few seconds. Check the years you want, or use "Select All" / "Recent 5 Years."
 
 4. **Download:**
 
@@ -120,7 +118,7 @@ The downloader builds an organized folder structure in your Downloads folder.
 | Option             | Description                                                      |
 | ------------------ | ---------------------------------------------------------------- |
 | **Output Folder**  | Change where files are saved (defaults to Downloads/BRIMR_Data). |
-| **Headless Mode**  | Run Chrome invisibly in the background (on by default).          |
+| **Headless Mode**  | Run Chrome invisibly in the background (off by default).         |
 | **Year Selection** | Check individual years or use the quick-select buttons.          |
 
 ---
@@ -128,13 +126,16 @@ The downloader builds an organized folder structure in your Downloads folder.
 ## Troubleshooting
 
 **Chrome doesn't start / ChromeDriver error**
-The script downloads the correct ChromeDriver for your Chrome version automatically. Make sure Google Chrome is installed and your internet connection is working.
+Selenium finds the matching ChromeDriver for your Chrome version on its own. Make sure Google Chrome is installed, Selenium is version 4.6 or newer, and your internet connection is working.
+
+**The year list says "default range"**
+The app couldn't reach BRIMR when it started, so it lists every possible year since 2006 instead. Check your connection and restart the app.
 
 **Some years show no files**
 BRIMR data has a natural lag, so the most recent year may not be posted yet. The script reports "Years without data: X" if any selected years are empty.
 
 **Download seems stuck**
-Larger files take longer. Check the log file for progress, or disable headless mode to watch the browser work.
+Larger files take longer. Check the log file for progress, or turn off headless mode to watch the browser work.
 
 ---
 
@@ -145,9 +146,7 @@ Larger files take longer. Check the log file for progress, or disable headless m
 - Internet connection
 
 **Python Packages:**
-- `selenium` - Browser automation
-- `webdriver-manager` - Automatic ChromeDriver management
-- `requests` - HTTP requests for year detection
+- `selenium` (4.6 or newer) - Browser automation and ChromeDriver setup
 
 ---
 
