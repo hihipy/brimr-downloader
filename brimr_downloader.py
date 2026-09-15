@@ -2,22 +2,22 @@
 """
 BRIMR NIH Funding Data Downloader
 
-Downloads Excel files from BRIMR using browser automation.
+Downloads Excel files from BRIMR over HTTPS, no browser required.
 Automatically detects available years from the website.
+
+BRIMR's host refuses HTTP clients whose TLS handshake does not look like a
+browser's, so requests go through curl_cffi impersonating Chrome.
 
 Features:
     - Thread-safe UI updates
-    - Single Chrome instance (faster multi-year downloads)
+    - One reused HTTP session for all downloads
     - Logging to file
     - Configurable timeouts
-    - Cancel button
+    - Cancel button, effective mid-file
     - Cross-platform (Windows, macOS, Linux)
 
 Requirements:
-    pip install selenium
-
-Tests:
-    python -m pytest
+    pip install curl_cffi
 
 Usage:
     python brimr_downloader.py
@@ -29,7 +29,6 @@ import logging
 import platform
 import queue
 import re
-import shutil
 import threading
 import time
 from datetime import datetime
@@ -38,13 +37,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 from urllib.parse import unquote, urljoin, urlparse
 
-from selenium import webdriver
-from selenium.common.exceptions import WebDriverException
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
+from curl_cffi import CurlError
+from curl_cffi import requests as curl_requests
 
 if TYPE_CHECKING:
     from tkinter import Event
@@ -56,17 +50,19 @@ from tkinter import filedialog, messagebox, ttk
 # Configuration Constants - Adjust these if needed
 # =============================================================================
 
-PAGE_LOAD_TIMEOUT: int = 15
+PAGE_TIMEOUT: int = 15
 DOWNLOAD_TIMEOUT: int = 90
-EXTRA_RENDER_WAIT: float = 2.0
-DOWNLOAD_CHECK_INTERVAL: float = 0.3
+DOWNLOAD_CHUNK_BYTES: int = 64 * 1024
 UI_QUEUE_POLL_MS: int = 100
+IMPERSONATE: str = "chrome"
 
 HOME_URL: str = "https://brimr.org/"
 BASE_URL_TEMPLATE: str = "https://brimr.org/brimr-rankings-of-nih-funding-in-{year}/"
 FIRST_RANKING_YEAR: int = 2006
 YEAR_PAGE_RE = re.compile(r"brimr-rankings-of-nih-funding-in-(\d{4})")
 EXCEL_SUFFIXES: tuple[str, ...] = (".xls", ".xlsx")
+# File signatures: .xlsx is a zip archive, .xls is an OLE compound file.
+EXCEL_MAGIC: tuple[bytes, ...] = (b"PK\x03\x04", b"\xd0\xcf\x11\xe0")
 
 FILE_CATEGORIES: dict[str, list[str]] = {
     # Source/master data files - comprehensive institutional data
@@ -318,23 +314,30 @@ def fallback_years(today: datetime | None = None) -> list[int]:
     return list(range(latest_possible, FIRST_RANKING_YEAR - 1, -1))
 
 
+def create_session() -> curl_requests.Session:
+    """Create an HTTP session whose TLS handshake matches Chrome's."""
+    return curl_requests.Session(impersonate=IMPERSONATE)
+
+
+def fetch_page(session: curl_requests.Session, url: str) -> str:
+    """Return a page's HTML. Raises CurlError on network or HTTP failure."""
+    resp = session.get(url, timeout=PAGE_TIMEOUT)
+    resp.raise_for_status()
+    return resp.text
+
+
 def detect_available_years(
-    driver: webdriver.Chrome, logger: logging.Logger | None = None
+    session: curl_requests.Session, logger: logging.Logger | None = None
 ) -> tuple[list[int], bool]:
     """
     Read the available ranking years from the BRIMR homepage navigation.
 
-    The host rejects plain HTTP clients by TLS fingerprint, so this goes
-    through the browser. Returns (years, detected); detected is False when
-    the page could not be read and the fallback range is returned instead.
+    Returns (years, detected); detected is False when the page could not be
+    read and the fallback range is returned instead.
     """
     try:
-        driver.get(HOME_URL)
-        WebDriverWait(driver, PAGE_LOAD_TIMEOUT).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        years = parse_year_links(driver.page_source)
-    except WebDriverException as e:
+        years = parse_year_links(fetch_page(session, HOME_URL))
+    except CurlError as e:
         years = []
         if logger:
             logger.debug(f"Homepage read failed: {e}")
@@ -404,99 +407,80 @@ def sanitize_filename(filename: str) -> str:
 
 
 # =============================================================================
-# Chrome Driver Management
+# File Downloads
 # =============================================================================
 
 
-def create_chrome_driver(
-    download_dir: Path | None,
-    headless: bool = False,
-    logger: logging.Logger | None = None
-) -> webdriver.Chrome:
+class DownloadError(Exception):
+    """A file could not be downloaded or was not a valid Excel file."""
+
+
+class DownloadCancelled(Exception):
+    """The user cancelled while a file was transferring."""
+
+
+def download_file(
+    session: curl_requests.Session,
+    url: str,
+    final_path: Path,
+    cancel_event: threading.Event | None = None,
+) -> int:
     """
-    Create a Chrome WebDriver.
+    Stream a file to final_path and return its size in bytes.
 
-    With a download_dir, the driver saves files there without prompting.
-    Without one, it is a read-only browser for page lookups.
+    The body goes to a .part file first and is renamed only once it is
+    complete and verified, so a failed or cancelled transfer never leaves a
+    file that the skip-existing check would later mistake for a finished one.
     """
-    options = Options()
+    part_path = final_path.with_name(final_path.name + ".part")
+    final_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if download_dir is not None:
-        download_dir_str = str(download_dir.resolve())
-        prefs = {
-            "download.default_directory": download_dir_str,
-            "download.prompt_for_download": False,
-            "download.directory_upgrade": True,
-            "safebrowsing.enabled": True,
-            "profile.default_content_settings.popups": 0,
-            "profile.content_settings.exceptions.automatic_downloads.*.setting": 1,
-            "profile.default_content_setting_values.automatic_downloads": 1,
-        }
-        options.add_experimental_option("prefs", prefs)
+    try:
+        resp = session.get(url, timeout=DOWNLOAD_TIMEOUT, stream=True)
+    except CurlError as e:
+        raise DownloadError(f"request failed: {e}") from e
 
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1200,800")
+    written = 0
+    try:
+        if resp.status_code != 200:
+            raise DownloadError(f"HTTP {resp.status_code}")
 
-    if headless:
-        options.add_argument("--headless=new")
+        with part_path.open("wb") as fh:
+            for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
+                if cancel_event and cancel_event.is_set():
+                    raise DownloadCancelled
+                if not chunk:
+                    continue
+                # A blocked request can return an HTML page with status 200,
+                # so check the signature before saving anything as Excel.
+                if written == 0 and not chunk.startswith(EXCEL_MAGIC):
+                    ctype = resp.headers.get("Content-Type", "unknown type")
+                    raise DownloadError(f"not an Excel file ({ctype})")
+                fh.write(chunk)
+                written += len(chunk)
 
-    if logger:
-        logger.info("Starting Chrome (Selenium Manager locates the driver)...")
+        expected = resp.headers.get("Content-Length", "")
+        # With compression the header counts encoded bytes, so skip the check.
+        encoded = resp.headers.get("Content-Encoding", "identity") != "identity"
+        if written == 0:
+            raise DownloadError("empty response")
+        if expected.isdigit() and not encoded and int(expected) != written:
+            raise DownloadError(f"incomplete ({written} of {expected} bytes)")
 
-    # A Service with no path hands driver lookup to Selenium Manager (Selenium 4.6+).
-    driver = webdriver.Chrome(service=Service(), options=options)
+        part_path.replace(final_path)
+        return written
 
-    if download_dir is not None:
-        set_download_directory(driver, download_dir)
+    except CurlError as e:
+        raise DownloadError(f"transfer failed: {e}") from e
 
-    if logger:
-        logger.info(f"Chrome driver ready (headless={headless})")
-
-    return driver
-
-
-def set_download_directory(driver: webdriver.Chrome, directory: Path) -> None:
-    """Change the download directory for an existing Chrome driver."""
-    directory.mkdir(parents=True, exist_ok=True)
-    driver.execute_cdp_cmd(
-        "Page.setDownloadBehavior",
-        {"behavior": "allow", "downloadPath": str(directory.resolve())}
-    )
-
-
-def wait_for_download_complete(
-    download_dir: Path,
-    timeout: float = DOWNLOAD_TIMEOUT,
-    cancel_event: threading.Event | None = None
-) -> Path | None:
-    """Wait for a download to complete and return the downloaded file path."""
-    end_time = time.time() + timeout
-
-    while time.time() < end_time:
-        if cancel_event and cancel_event.is_set():
-            return None
-
-        try:
-            files = list(download_dir.iterdir())
-        except OSError:
-            time.sleep(DOWNLOAD_CHECK_INTERVAL)
-            continue
-
-        temp_suffixes = (".crdownload", ".tmp", ".part")
-        temp_files = [f for f in files if f.suffix.lower() in temp_suffixes]
-        excel_files = [
-            f for f in files
-            if f.suffix.lower() in EXCEL_SUFFIXES and f.is_file()
-        ]
-
-        if excel_files and not temp_files:
-            return max(excel_files, key=lambda f: f.stat().st_mtime)
-
-        time.sleep(DOWNLOAD_CHECK_INTERVAL)
-
-    return None
+    finally:
+        resp.close()
+        part_path.unlink(missing_ok=True)
+        if not final_path.exists():
+            try:
+                final_path.parent.rmdir()  # Succeeds only if nothing else is there
+            except OSError:
+                pass
 
 
 # =============================================================================
@@ -518,7 +502,6 @@ class BRIMRDownloaderApp:
         self.year_vars: dict[int, tk.BooleanVar] = {}
         self.available_years: list[int] = []
         self.is_downloading: bool = False
-        self.headless_var: tk.BooleanVar = tk.BooleanVar(value=False)
 
         self.ui_queue: queue.Queue[tuple[Callable, tuple]] = queue.Queue()
         self.cancel_event: threading.Event = threading.Event()
@@ -593,7 +576,7 @@ class BRIMRDownloaderApp:
         ).pack(pady=(0, 5))
 
         ttk.Label(
-            parent, text="Downloads Excel files using Chrome browser automation",
+            parent, text="Downloads Excel files directly from brimr.org",
             font=("Segoe UI", 10),
         ).pack(pady=(0, 5))
 
@@ -695,20 +678,16 @@ class BRIMRDownloaderApp:
     def _detect_years_async(self) -> None:
         def detect():
             years, detected = fallback_years(), False
-            driver: webdriver.Chrome | None = None
             try:
-                driver = create_chrome_driver(None, headless=True)
-                years, detected = detect_available_years(driver)
+                session = create_session()
+                try:
+                    years, detected = detect_available_years(session)
+                finally:
+                    session.close()
             except Exception:
                 # Any failure here must still reach the UI, or the year list
                 # stays on "Detecting..." forever. The fallback keeps it usable.
                 pass
-            finally:
-                if driver:
-                    try:
-                        driver.quit()
-                    except WebDriverException:
-                        pass
             self._enqueue_ui(self._populate_years, years, detected)
         threading.Thread(target=detect, daemon=True).start()
 
@@ -738,17 +717,11 @@ class BRIMRDownloaderApp:
         options_frame = ttk.LabelFrame(parent, text="Options", padding="10")
         options_frame.pack(fill=tk.X, pady=(0, 10))
 
-        ttk.Checkbutton(
-            options_frame,
-            text="Run in headless mode (no visible browser window)",
-            variable=self.headless_var,
-        ).pack(anchor="w")
-
         ttk.Label(
             options_frame,
             text="Files organized: Year → Category → Files | Logs saved with downloads",
             font=("Segoe UI", 8, "italic"), foreground="gray",
-        ).pack(anchor="w", pady=(5, 0))
+        ).pack(anchor="w")
 
     def _create_progress_section(self, parent: ttk.Frame) -> None:
         progress_frame = ttk.LabelFrame(parent, text="Progress", padding="10")
@@ -818,12 +791,10 @@ class BRIMRDownloaderApp:
             return
 
         year_str = ", ".join(str(y) for y in sorted(selected_years, reverse=True))
-        mode = "headless (no window)" if self.headless_var.get() else "visible"
 
         if not messagebox.askyesno(
             "Confirm Download",
             f"Download Excel files for: {year_str}?\n\n"
-            f"Browser mode: {mode}\n"
             f"Files will be saved to:\n{self.output_folder}"
         ):
             return
@@ -842,12 +813,12 @@ class BRIMRDownloaderApp:
     def _cancel_download(self) -> None:
         if self.is_downloading:
             self.cancel_event.set()
-            self._update_status("Cancelling...", "Waiting for current file to finish")
+            self._update_status("Cancelling...", "Stopping the current file")
             if self.logger:
                 self.logger.info("Cancel requested by user")
 
     def _download_years(self, years: list[int]) -> None:
-        """Download Excel files for selected years using a single Chrome instance."""
+        """Download Excel files for the selected years over one HTTP session."""
         downloaded = 0
         skipped = 0
         failed = 0
@@ -855,20 +826,10 @@ class BRIMRDownloaderApp:
         cancelled = False
 
         self.output_folder.mkdir(parents=True, exist_ok=True)
-        temp_dir = self.output_folder / "_temp_downloads"
-        temp_dir.mkdir(exist_ok=True)
-
-        driver: webdriver.Chrome | None = None
+        session: curl_requests.Session | None = None
 
         try:
-            self._update_status("Starting Chrome browser...", "This may take a moment")
-            driver = create_chrome_driver(
-                temp_dir, headless=self.headless_var.get(), logger=self.logger
-            )
-
-            # Warmup: navigate to a blank page first to ensure driver is fully ready
-            driver.get("about:blank")
-            time.sleep(0.5)
+            session = create_session()
 
             for year in sorted(years):  # Oldest to newest
                 if self.cancel_event.is_set():
@@ -876,41 +837,20 @@ class BRIMRDownloaderApp:
                     break
 
                 year_folder = self.output_folder / str(year)
-                year_folder.mkdir(exist_ok=True)
-                set_download_directory(driver, temp_dir)
-
                 url = BASE_URL_TEMPLATE.format(year=year)
                 self._update_status(f"Loading {year} page...", url)
                 if self.logger:
                     self.logger.info(f"Processing year {year}")
 
                 try:
-                    driver.get(url)
-                    WebDriverWait(driver, PAGE_LOAD_TIMEOUT).until(
-                        EC.presence_of_element_located((By.TAG_NAME, "body"))
-                    )
-                    time.sleep(EXTRA_RENDER_WAIT)
-
-                    # Wait a bit more for dynamic content to load
-                    # Try to wait for at least one link to appear
-                    try:
-                        WebDriverWait(driver, 5).until(
-                            EC.presence_of_element_located(
-                                (By.CSS_SELECTOR, "a[href*='.xls']")
-                            )
-                        )
-                    except Exception:
-                        pass  # Continue anyway, links might use different format
-
-                except Exception as e:
+                    excel_urls = extract_excel_urls(fetch_page(session, url), url)
+                except CurlError as e:
                     if self.logger:
                         self.logger.error(f"Failed to load {year}: {e}")
                     self._update_status(f"⚠ {year}: Page failed to load", str(e)[:50])
                     years_skipped += 1
                     time.sleep(1)  # Brief pause so user sees the message
                     continue
-
-                excel_urls = extract_excel_urls(driver.page_source, url)
 
                 if self.logger:
                     self.logger.debug(
@@ -927,6 +867,7 @@ class BRIMRDownloaderApp:
                     time.sleep(1)  # Brief pause so user sees the message
                     continue
 
+                year_folder.mkdir(exist_ok=True)
                 self._update_status(
                     f"Found {len(excel_urls)} files for {year}", "Starting..."
                 )
@@ -941,8 +882,7 @@ class BRIMRDownloaderApp:
                     raw_name = unquote(Path(urlparse(file_url).path).name)
                     filename = sanitize_filename(raw_name)
                     category = categorize_file(filename)
-                    category_folder = year_folder / category
-                    final_path = category_folder / filename
+                    final_path = year_folder / category / filename
 
                     if final_path.exists():
                         skipped += 1
@@ -959,42 +899,27 @@ class BRIMRDownloaderApp:
                     self._update_progress(i, len(excel_urls))
 
                     try:
-                        for f in temp_dir.iterdir():
-                            try:
-                                f.unlink()
-                            except OSError:
-                                pass
-
-                        driver.get(file_url)
-                        time.sleep(0.5)
-
-                        downloaded_file = wait_for_download_complete(
-                            temp_dir, cancel_event=self.cancel_event
+                        size = download_file(
+                            session, file_url, final_path, self.cancel_event
                         )
-
-                        if self.cancel_event.is_set():
-                            cancelled = True
-                            break
-
-                        if downloaded_file and downloaded_file.exists():
-                            category_folder.mkdir(exist_ok=True)
-                            shutil.move(str(downloaded_file), str(final_path))
-                            downloaded += 1
-                            if self.logger:
-                                self.logger.info(f"✓ {category}/{filename}")
-                            self._update_status(
-                                f"{year}: {i}/{len(excel_urls)}",
-                                f"✓ {category}/{filename}"
-                            )
-                        else:
-                            failed += 1
-                            if self.logger:
-                                self.logger.warning(f"⚠ Timeout: {filename}")
-
-                    except Exception as e:
+                    except DownloadCancelled:
+                        cancelled = True
+                        break
+                    except (DownloadError, OSError) as e:
                         failed += 1
                         if self.logger:
-                            self.logger.exception(f"Failed: {filename}")
+                            self.logger.warning(f"⚠ Failed: {filename}: {e}")
+                        continue
+
+                    downloaded += 1
+                    if self.logger:
+                        self.logger.info(
+                            f"✓ {category}/{filename} ({size / 1024:.0f} KB)"
+                        )
+                    self._update_status(
+                        f"{year}: {i}/{len(excel_urls)}",
+                        f"✓ {category}/{filename}"
+                    )
 
                 if cancelled:
                     break
@@ -1005,13 +930,9 @@ class BRIMRDownloaderApp:
             self._show_error("Error", f"An error occurred:\n{e}")
 
         finally:
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
+            if session:
+                session.close()
 
-            shutil.rmtree(temp_dir, ignore_errors=True)
             self.is_downloading = False
             self._set_buttons_state(downloading=False)
 

@@ -5,8 +5,8 @@
 
 **Built with**
 
+[![curl_cffi](https://img.shields.io/badge/curl__cffi-073551?style=flat&logo=curl&logoColor=white)](https://pypi.org/project/curl-cffi/)
 [![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)](https://python.org)
-[![Selenium](https://img.shields.io/badge/Selenium-43B02A?style=flat&logo=selenium&logoColor=white)](https://selenium.dev)
 [![Tkinter](https://img.shields.io/badge/Tkinter-FFD43B?style=flat&logo=python&logoColor=black)](https://docs.python.org/3/library/tkinter.html)
 
 If you've ever spent time downloading Excel files from the BRIMR website one by one, you know how tedious it gets. This Python script automates that work so you can get straight to analyzing NIH funding data, turning hours of clicking into a single organized download.
@@ -26,34 +26,35 @@ The [Blue Ridge Institute for Medical Research (BRIMR)](https://brimr.org/) publ
 
 ## The Solution
 
-This script uses browser automation to visit each year's BRIMR page, download every Excel file, and sort them into a clean folder structure.
+This script visits each year's BRIMR page, downloads every Excel file, and sorts them into a clean folder structure.
 
-### Why Browser Automation?
+### Why curl_cffi?
 
-BRIMR's server turns away requests that don't come from a real web browser, so a plain download script gets blocked. This tool drives an actual copy of Chrome, which the server accepts.
+BRIMR's server checks how a program connects before it answers, and it turns away ordinary download scripts. The [curl_cffi](https://pypi.org/project/curl-cffi/) package connects the same way Google Chrome does, so the server accepts it without a browser ever opening.
 
-- **Gets past the server check:** Requests from ordinary scripts are refused. A real browser is let through.
-- **Reliable downloads:** Automating a real browser means downloads work the same way they would if you clicked each link yourself.
-- **Desktop GUI:** No command line required. Check the years you want and click Download.
+- **Gets past the server check:** Requests look like they come from Chrome, so they aren't refused.
+- **No browser needed:** Nothing to install beyond Python and one package, and no browser window to wait for.
+- **Desktop GUI:** No command line required after setup. Check the years you want and click Download.
 
 ---
 
 ## Features
 
 - **Simple GUI:** A desktop interface to select years and watch progress.
-- **Single Chrome instance:** Reuses one browser session for all downloads, which speeds up multi-year runs.
+- **Direct downloads:** Files come straight from BRIMR over one reused connection, which keeps multi-year runs quick.
 - **Automatic sorting:** Files are categorized into logical folders (School Rankings, Clinical Departments, PI Rankings, and so on).
+- **Checks every file:** A download is saved only once it's complete and confirmed to be a real Excel file, so a failed download never leaves a broken file behind.
 - **Skips existing files:** Won't re-download files you already have, which makes adding new years easy.
-- **Cancel anytime:** Stop mid-download without losing what's already saved.
+- **Cancel anytime:** Stop mid-download. The file in progress is discarded, and everything already saved stays.
 - **Logging:** Every download is recorded to a timestamped file for debugging.
 
 ---
 
 ## Getting Started
 
-### You'll Need Python and Chrome
+### You'll Need Python
 
-Install **Python 3.10** or newer from the official [Python website](https://www.python.org/), and make sure [Google Chrome](https://www.google.com/chrome/) is installed.
+Install **Python 3.10** or newer from the official [Python website](https://www.python.org/).
 
 ### Running the Downloader
 
@@ -66,7 +67,7 @@ Install **Python 3.10** or newer from the official [Python website](https://www.
 ```bash
    python3 -m venv .venv
    source .venv/bin/activate
-   pip install selenium
+   pip install curl_cffi
 ```
 
    **Windows:**
@@ -74,7 +75,7 @@ Install **Python 3.10** or newer from the official [Python website](https://www.
 ```powershell
    python -m venv .venv
    .\.venv\Scripts\Activate.ps1
-   pip install selenium
+   pip install curl_cffi
 ```
 
 2. **Run the script:**
@@ -85,7 +86,7 @@ Install **Python 3.10** or newer from the official [Python website](https://www.
 
 3. **Select your years:**
 
-   When the window opens, the app starts a hidden copy of Chrome to read the available years from the BRIMR website. This takes a few seconds. Check the years you want, or use "Select All" / "Recent 5 Years."
+   When the window opens, the app reads the available years from the BRIMR website. Check the years you want, or use "Select All" / "Recent 5 Years."
 
 4. **Download:**
 
@@ -100,7 +101,7 @@ The downloader builds an organized folder structure in your Downloads folder.
 | Folder / File                                  | Description                                                                        |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `BRIMR_Data/`                                  | Root folder containing all downloaded files, organized by year.                    |
-| `BRIMR_Data/2024/`                             | Each selected year gets its own folder.                                            |
+| `BRIMR_Data/2024/`                             | Each year with files gets its own folder.                                          |
 | `BRIMR_Data/2024/01_Source_Data/`              | Worldwide rankings, contracts, and full institutional data.                        |
 | `BRIMR_Data/2024/02_School_Rankings/`          | Medical schools, nursing, pharmacy, dentistry, and other school types.             |
 | `BRIMR_Data/2024/03_Department_Summaries/`     | Aggregated views of funding by department.                                         |
@@ -118,35 +119,33 @@ The downloader builds an organized folder structure in your Downloads folder.
 | Option             | Description                                                      |
 | ------------------ | ---------------------------------------------------------------- |
 | **Output Folder**  | Change where files are saved (defaults to Downloads/BRIMR_Data). |
-| **Headless Mode**  | Run Chrome invisibly in the background (off by default).         |
 | **Year Selection** | Check individual years or use the quick-select buttons.          |
 
 ---
 
 ## Troubleshooting
 
-**Chrome doesn't start / ChromeDriver error**
-Selenium finds the matching ChromeDriver for your Chrome version on its own. Make sure Google Chrome is installed, Selenium is version 4.6 or newer, and your internet connection is working.
-
 **The year list says "default range"**
 The app couldn't reach BRIMR when it started, so it lists every possible year since 2006 instead. Check your connection and restart the app.
+
+**Every file fails, or the log shows HTTP 403**
+BRIMR's server may have changed how it checks connections. Update curl_cffi with `pip install -U curl_cffi` and try again.
 
 **Some years show no files**
 BRIMR data has a natural lag, so the most recent year may not be posted yet. The script reports "Years without data: X" if any selected years are empty.
 
 **Download seems stuck**
-Larger files take longer. Check the log file for progress, or turn off headless mode to watch the browser work.
+Larger files take longer. Check the log file for progress, or press Cancel and run again. Files already saved will be skipped.
 
 ---
 
 ## Requirements
 
 - Python 3.10+
-- Google Chrome
 - Internet connection
 
 **Python Packages:**
-- `selenium` (4.6 or newer) - Browser automation and ChromeDriver setup
+- `curl_cffi` - Downloads that connect the way Chrome does
 
 ---
 
